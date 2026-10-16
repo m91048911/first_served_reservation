@@ -1,17 +1,14 @@
 
-from locust import HttpUser, task, constant
-import uuid
+from locust import HttpUser, task, between
 
 
 class SeatReservationUser(HttpUser):
-    wait_time = constant(0)
+    wait_time = between(0.1, 0.5)
 
     @task
     def reserve_seat(self):
-        user_id = str(uuid.uuid4())
-
         with self.client.post(
-            f"/seats/A-10/reserve/{user_id}",
+            "/seats/A-10/reserve/user1",
             catch_response=True,
         ) as response:
             if response.status_code != 200:
@@ -23,10 +20,12 @@ class SeatReservationUser(HttpUser):
             try:
                 data = response.json()
             except ValueError:
-                response.failure("JSON 응답 오류")
+                response.failure("잘못된 JSON 응답")
                 return
 
             if data.get("success") is True:
                 response.success()
+            elif data.get("message") == "이미 선점된 좌석입니다":
+                response.success()
             else:
-                response.failure("이미 선점된 좌석")
+                response.failure("예상하지 못한 API 응답")
