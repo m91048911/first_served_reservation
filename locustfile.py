@@ -1,4 +1,5 @@
 
+import uuid
 from locust import HttpUser, task, between, events
 
 fail_cnt = 0
@@ -10,8 +11,9 @@ class SeatReservationUser(HttpUser):
     @task
     def reserve_seat(self):
         global fail_cnt, success_cnt
+        seat_id = f"TEST-{uuid.uuid4()}"
         with self.client.post(
-            "/seats/A-10/reserve/user1",
+            f"/seats/{seat_id}/reserve/user1",
             catch_response=True,
         ) as response:
             if response.status_code != 200:
@@ -35,8 +37,8 @@ class SeatReservationUser(HttpUser):
             else:
                 response.failure("예상하지 못한 API 응답")
 
-    @events.test_stop.add_listener
-    def on_test_stop(environment, **kwargs):
-        print(f"선점 성공 횟수: {success_cnt}")
-        print(f"선점 거절 횟수: {fail_cnt}")
-        print(f"전체 선점 요청 횟수: {success_cnt + fail_cnt}")
+@events.test_stop.add_listener
+def on_test_stop(environment, **kwargs):
+    print(f"선점 성공 횟수: {success_cnt}")
+    print(f"선점 거절 횟수: {fail_cnt}")
+    print(f"전체 선점 요청 횟수: {success_cnt + fail_cnt}")
