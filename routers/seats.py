@@ -1,11 +1,17 @@
 import uuid
 import redis
+
 from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+
 from redis_client import get_redis
+from database import get_db
+from models.reservation import Reservation
 
 router = APIRouter(prefix="/seats", tags=["Seats"])
 
-# 검증하고 삭제하는 lua스크립트
+# 락 소유자를 검증한 뒤 삭제
 RELEASE_LOCK_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
@@ -14,7 +20,7 @@ else
 end
 """
 
-# 락의 시간 갱신 스크립트
+# 락 소유자를 검증한 뒤 TTL 갱신
 RENEW_LOCK_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('expire', KEYS[1], ARGV[2])
@@ -27,11 +33,13 @@ end
 def reserve_seat(
     seat_id: str,
     user_id: str,
-    r: redis.Redis = Depends(get_redis)
+    r: redis.Redis = Depends(get_redis),
+    db: Session = Depends(get_db)
 ):
     key = f"seat:{seat_id}"
     lock_token = str(uuid.uuid4())
 
+    # 1. Redis에서 좌석 선점
     success = r.set(
         key,
         lock_token,
@@ -39,15 +47,47 @@ def reserve_seat(
         ex=600
     )
     if not success:
-        return {"success": False, "message": "이미 선점된 좌석입니다"}
-    
-    return {
-        "success": True,
-        "message": "좌석 선점 성공",
-        "seat_id": seat_id,
-        "user_id": user_id,
-        "lock_token": lock_token
-    }
+        return {
+            "success": False,
+            "message": "이미 선점된 좌석입니다"
+        }
+
+    # 2. Redis 선점 성공 후 DB에 예약 기록 저장
+    try:
+        reservation = Reservation(
+            seat_id=seat_id,
+            user_id=user_id,
+            status="pending"
+        )
+
+        db.add(reservation)
+        db.commit()
+        db.refresh(reservation)
+        
+        return {
+            "success": True,
+            "message": "좌석 선점 및 예약 기록 저장 성공",
+            "reservation_id": reservation.id,
+            "seat_id": seat_id,
+            "user_id": user_id,
+            "status": reservation.status,
+            "lock_token": lock_token
+        }
+    except SQLAlchemyError:
+        db.rollback()
+
+        # 3. DB 저장 실패 시, 내 토큰이 일치할 때만 락 해제
+        r.eval(
+            RELEASE_LOCK_SCRIPT,
+            1,
+            key,
+            lock_token
+        )
+
+        return {
+            "success": False,
+            "message": "예약 정보 저장에 실패했습니다"
+        }
 
 @router.delete("/{seat_id}/lock")
 def release_seat_lock(
@@ -77,8 +117,6 @@ def release_seat_lock(
 
 @router.post("/{seat_id}/renew")
 def lock_seat_renew(
-    seat_id: str,
-    lock_token: str,
     r: redis.Redis = Depends(get_redis)
 ):
     key = f"seat:{seat_id}"
