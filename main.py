@@ -1,6 +1,9 @@
 from fastapi import FastAPI
-from models import user
 from database import Base, engine
+
+import models.user
+import models.seat
+import models.reservation
 
 # router
 from routers.users import router as users_router
